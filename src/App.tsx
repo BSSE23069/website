@@ -10,6 +10,8 @@ import ShipMap from './components/ShipMap';
 import FleetSidebar from './components/FleetSidebar';
 import { socket } from './lib/socket';
 import { analyzeDistressMessage } from './lib/gemini';
+import { supabase } from './lib/supabase';
+import { fetchMaritimeWeather, WeatherData } from './services/weatherService';
 
 type Role = 'command' | 'captain' | null;
 
@@ -22,8 +24,51 @@ export default function App() {
   const [activeShipId, setActiveShipId] = useState<string | null>(null); // For Captain role
   const [distressMsg, setDistressMsg] = useState('');
   const [isAnalyzing, setIsAnalyzing] = useState(false);
+  const [weather, setWeather] = useState<WeatherData | null>(null);
 
   useEffect(() => {
+    if (selectedShip) {
+      fetchMaritimeWeather(selectedShip.position[0], selectedShip.position[1]).then(setWeather);
+    } else {
+      setWeather(null);
+    }
+  }, [selectedShip?.shipId]);
+
+  useEffect(() => {
+    // Initial data fetch from Supabase
+    const fetchInitialData = async () => {
+      if (!supabase) return;
+      
+      const { data: shipsData } = await supabase.from('ships').select('*');
+      if (shipsData) {
+        setShips(shipsData.map((s: any) => ({
+          shipId: s.ship_id,
+          name: s.name,
+          position: [s.lat, s.lng],
+          speed: s.speed,
+          heading: s.heading,
+          destination: s.destination,
+          fuel: s.fuel,
+          cargo: s.cargo,
+          status: s.status,
+          updatedAt: s.updated_at
+        })));
+      }
+
+      const { data: zonesData } = await supabase.from('zones').select('*');
+      if (zonesData) setZones(zonesData);
+      
+      const { data: alertsData } = await supabase.from('alerts').select('*').order('created_at', { ascending: false }).limit(20);
+      if (alertsData) setAlerts(alertsData.map((a: any) => ({
+        type: a.type,
+        shipId: a.ship_id,
+        message: a.message,
+        timestamp: new Date(a.created_at).getTime()
+      })));
+    };
+
+    fetchInitialData();
+
     socket.on('init', (data) => {
       setShips(data.ships);
       setZones(data.restrictedZones);
@@ -31,10 +76,7 @@ export default function App() {
     });
 
     socket.on('fleet:update', (data) => {
-      setShips(prev => {
-        // Simple interpolation could happen here, but for now we just update
-        return data.ships;
-      });
+      setShips(prev => data.ships);
     });
 
     socket.on('zones:update', (data) => {
@@ -43,10 +85,48 @@ export default function App() {
 
     socket.on('alert:new', (data) => {
       setAlerts(prev => [...prev, data]);
-      // Audible alert logic could go here
-      const audio = new Audio('/alert.mp3'); // Assume file exists or use synth
-      // audio.play().catch(() => {});
     });
+
+    // Supabase Realtime Subscription (Fallback for Vercel/Background updates)
+    if (supabase) {
+      const shipChannel = supabase
+        .channel('ships-realtime')
+        .on('postgres_changes', { event: '*', table: 'ships', schema: 'public' }, (payload) => {
+          const newShip = payload.new as any;
+          if (!newShip.ship_id) return;
+          
+          setShips(current => {
+            const index = current.findIndex(s => s.shipId === newShip.ship_id);
+            const mappedShip = {
+              shipId: newShip.ship_id,
+              name: newShip.name,
+              position: [newShip.lat, newShip.lng],
+              speed: newShip.speed,
+              heading: newShip.heading,
+              destination: newShip.destination,
+              fuel: newShip.fuel,
+              cargo: newShip.cargo,
+              status: newShip.status,
+              updatedAt: newShip.updated_at
+            };
+            if (index > -1) {
+              const updated = [...current];
+              updated[index] = mappedShip;
+              return updated;
+            }
+            return [...current, mappedShip];
+          });
+        })
+        .subscribe();
+
+      return () => {
+        supabase.removeChannel(shipChannel);
+        socket.off('init');
+        socket.off('fleet:update');
+        socket.off('zones:update');
+        socket.off('alert:new');
+      }
+    }
 
     return () => {
       socket.off('init');
@@ -180,8 +260,10 @@ export default function App() {
         {/* HUD Elements */}
         <div className="absolute top-6 left-6 z-[500] bg-white border border-zinc-200 px-4 py-2.5 rounded-lg flex items-center gap-4 shadow-sm">
           <div className="flex items-center gap-2">
-            <div className={`w-2 h-2 rounded-full ${socket.connected ? 'bg-emerald-500' : 'bg-red-500'} pulse`}></div>
-            <span className="text-[10px] font-bold uppercase tracking-tight text-zinc-500">System Link</span>
+            <div className={`w-2 h-2 rounded-full ${socket.connected ? 'bg-emerald-500' : 'bg-orange-500 animate-pulse'} transition-colors`}></div>
+            <span className="text-[10px] font-bold uppercase tracking-tight text-zinc-500">
+              {socket.connected ? 'Secure Link' : 'Connecting...'}
+            </span>
           </div>
           <div className="h-3 w-[1px] bg-zinc-200"></div>
           <span className="text-[10px] font-bold uppercase tracking-tight text-zinc-900 underline underline-offset-4">{role?.toUpperCase()}</span>
@@ -231,6 +313,23 @@ export default function App() {
                   {selectedShip.status}
                 </div>
               </div>
+
+              {weather && (
+                <div className="pt-4 border-t border-zinc-100 grid grid-cols-3 gap-2">
+                   <div className="text-center">
+                     <p className="text-[8px] text-zinc-400 font-bold uppercase">Waves</p>
+                     <p className="text-[10px] font-mono text-zinc-900">{weather.waveHeight}m</p>
+                   </div>
+                   <div className="text-center">
+                     <p className="text-[8px] text-zinc-400 font-bold uppercase">Wind</p>
+                     <p className="text-[10px] font-mono text-zinc-900">{weather.windSpeed}m/s</p>
+                   </div>
+                   <div className="text-center">
+                     <p className="text-[8px] text-zinc-400 font-bold uppercase">Vis</p>
+                     <p className="text-[10px] font-mono text-zinc-900">{weather.visibility}km</p>
+                   </div>
+                </div>
+              )}
             </motion.div>
           )}
         </AnimatePresence>
