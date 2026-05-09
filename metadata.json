@@ -1,0 +1,6 @@
+{
+  "name": "Strait of Hormuz: Fleet Crisis Command",
+  "description": "Real-time ship tracking and crisis management system for the Strait of Hormuz. Features live simulation, restricted zone geofencing, and AI-powered distress call analysis.",
+  "requestFramePermissions": [],
+  "majorCapabilities": []
+}
