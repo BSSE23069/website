@@ -56,7 +56,7 @@ export default function ShipMap({ ships, zones, onZoneCreate, role, selectedShip
       <MapContainer 
         center={[26.5, 54.5]} 
         zoom={7} 
-        className="w-full h-full grayscale-[20%] brightness-[1.02] contrast-[1.05]"
+        className="w-full h-full grayscale-[90%] brightness-[1.05] contrast-[1.1]"
         style={{ background: '#f4f4f5' }}
       >
         <TileLayer
